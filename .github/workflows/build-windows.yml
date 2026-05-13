@@ -39,6 +39,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Set up MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Install CUDA Toolkit ${{ matrix.cuda }}
         uses: Jimver/cuda-toolkit@v0.2.35
         id: cuda-toolkit
