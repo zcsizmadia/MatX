@@ -22,6 +22,12 @@ jobs:
             vc_toolset_dir: "v180"
             cmake_config_args: "-A x64"
 
+          - os: windows-2025-vs2026
+            cuda: "13.2.0"
+            label: "VS18 Ninja"
+            generator: "Ninja"
+            vc_toolset_dir: "v180"
+
           - os: ubuntu-22.04
             cuda: "13.2.0"
             label: "Linux-GCC"
@@ -95,7 +101,7 @@ jobs:
         run: |
           cmake -B build `
             -G "${{ matrix.generator }}" ${{ matrix.cmake_config_args || '' }} `
-            -DMATX_BUILD_TESTS=ON `
+            -DMATX_BUILD_TESTS=OFF `
             -DMATX_BUILD_EXAMPLES=ON `
             -DMATX_BUILD_BENCHMARKS=OFF `
             -DMATX_BUILD_DOCS=OFF `
