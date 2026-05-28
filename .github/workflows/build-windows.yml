@@ -112,6 +112,7 @@ jobs:
             -DMATX_BUILD_DOCS=OFF `
             -DCMAKE_CUDA_ARCHITECTURES="80"
 
+
       - name: Build
         run: cmake --build build --config Release --parallel
 
