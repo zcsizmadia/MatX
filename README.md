@@ -48,9 +48,9 @@ are necessary
 
 
 ## Requirements
-MatX support is currently limited to **Linux only** due to the time to test Windows. If you'd like to voice your support for native Windows support using Visual Studio, please comment on the issue here: https://github.com/NVIDIA/MatX/issues/153.
+MatX fully supports Linux with an installed CUDA Toolkit. Windows support is currently in alpha and only compiles with Visual Studio 2026. Older Visual Studio releases do not compile. Windows support is currently tested on a best-effort basis and not with every commit.
 
-MatX is using features in C++20 and the latest CUDA compilers and libraries. For this reason, when running with GPU support, CUDA 12.2.1 and g++9, nvc++ 24.5, or clang 17 or newer is required. You can download the CUDA Toolkit [here](https://developer.nvidia.com/cuda-downloads).
+MatX is using features in C++20 and the latest CUDA compilers and libraries. For this reason, when running with GPU support, CUDA 12.2.1 and g++9, nvc++ 24.5, MSVC 14.50, or clang 17 or newer is required. You can download the CUDA Toolkit [here](https://developer.nvidia.com/cuda-downloads).
 
 MatX has been tested on and supports Volta, Ampere, Ada, Hopper, and Blackwell GPU architectures. Jetson products are supported with Jetpack 5.0 or above.
 
