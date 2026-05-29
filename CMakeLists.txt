@@ -227,11 +227,11 @@ if(WIN32)
         add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/wd4714>")
 
         # Suppress NVCC warning 1427 (offsetof on non-standard-layout class) from pybind11 system headers
-        add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:--diag-suppress 1427>")
+        add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:--diag-suppress=1427>")
 
         # Suppress NVCC warning 20011 (__host__ function called from __host__ __device__ function)
         # in solver_projection.h: calls are guarded by #ifndef __CUDA_ARCH__ so they are safe.
-        add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:--diag-suppress 20011>")
+        add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:--diag-suppress=20011>")
 
         # /wd4127: conditional expression is constant — common in template/constexpr code.
         # VS18 2025+ (MSVC 1950+) resolves most of these automatically; suppress only on
