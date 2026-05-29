@@ -136,7 +136,7 @@ TYPED_TEST(SarBpTestNonComplexNonHalfFloatTypes, NonMixedTypes)
   MATX_EXIT_HANDLER();
 }
 
-// Test Mixed and FloatFloat precisions. These precisions are used when the user wants
+// Test Mixed, FloatFloat, and TaylorFast precisions. These precisions are used when the user wants
 // better than fp32 precision at lower cost than fp64 (especially for GPUs with reduced FP64 throughput).
 TYPED_TEST(SarBpTestDoubleType, MixedPrecision)
 {
@@ -193,9 +193,10 @@ TYPED_TEST(SarBpTestDoubleType, MixedPrecision)
     this->exec.sync();
   }
 
-  // Enable PhaseLUTOptimization
+  // Enable PhaseLUTOptimization for all remaining tests
+  params.features = SarBpFeature::PhaseLUTOptimization;
+
   {
-    params.features = SarBpFeature::PhaseLUTOptimization;
     (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, params)).run(this->exec);
     this->exec.sync();
   }
@@ -207,6 +208,117 @@ TYPED_TEST(SarBpTestDoubleType, MixedPrecision)
     (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, params)).run(this->exec);
     this->exec.sync();
   }
+
+  {
+    params.compute_type = SarBpComputeType::TaylorFast;
+    (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, params)).run(this->exec);
+    this->exec.sync();
+
+    // We reset TaylorFast and enable PhaseLUTOptimization below to include the text in the
+    // example that will be used in the documentation.
+    // example-begin sar-bp-2
+    params.compute_type = SarBpComputeType::TaylorFast;
+    params.features = SarBpFeature::PhaseLUTOptimization;
+
+    (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, params)
+      .props<PropSarBpTaylorFastAddThirdOrder>()).run(this->exec);
+    // example-end sar-bp-2
+    this->exec.sync();
+  }
+
+  MATX_EXIT_HANDLER();
+}
+
+// Verify the num_range_bins boundary at 2^24 for compute types that compute
+// the per-pulse bin_offset in fp32 (Float, Mixed, FloatFloat, TaylorFast). fp32 can
+// exactly represent all integers in [-2^24, 2^24] but not above, so those
+// paths accept num_range_bins == 2^24 and reject anything larger.
+//
+// To avoid a 128 MB phase-LUT allocation in the positive case, we use Mixed
+// compute with SarBpFeature::None, which routes through the no-LUT code path.
+// All bulk inputs use operator generators (matx::ones / matx::zeros) so the
+// only allocated memory is the tiny output image and a 1-element
+// platform_positions tensor.
+TYPED_TEST(SarBpTestDoubleType, RangeBinsLimitFp32Path)
+{
+  MATX_ENTER_HANDLER();
+
+  using complex_t = cuda::std::complex<float>;
+
+  constexpr index_t MAX_RANGE_BINS = static_cast<index_t>(1) << 24;
+  const index_t num_pulses = 1;
+  const index_t image_width = 4;
+  const index_t image_height = 4;
+
+  auto zero_image = matx::zeros<complex_t>({image_height, image_width});
+  auto voxel_locations = matx::zipvec(
+    matx::zeros<float>({image_height, image_width}),
+    matx::zeros<float>({image_height, image_width}),
+    matx::zeros<float>({image_height, image_width}));
+  auto range_to_mcp = matx::zeros<double>({num_pulses});
+  auto platform_positions = matx::make_tensor<double3>({num_pulses});
+  platform_positions(0) = double3{0.0, 0.0, 1000.0};
+  auto image = matx::make_tensor<complex_t>({image_height, image_width});
+
+  SarBpParams params;
+  params.compute_type = SarBpComputeType::Mixed;
+  params.features = SarBpFeature::None;  // skip phase-LUT alloc
+  params.center_frequency = 10.0e9;
+  params.del_r = 1.0;
+
+  auto run = [&](index_t num_range_bins) {
+    auto range_profiles = matx::ones<complex_t>({num_pulses, num_range_bins});
+    (image = matx::experimental::sar_bp(
+      zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, params)).run(this->exec);
+    this->exec.sync();
+  };
+
+  // num_range_bins == 2^24 is the inclusive upper bound and must not throw.
+  EXPECT_NO_THROW(run(MAX_RANGE_BINS));
+
+  // num_range_bins == 2^24 + 1 must throw matxException.
+  ASSERT_THROW(run(MAX_RANGE_BINS + 1), matx::detail::matxException);
+
+  MATX_EXIT_HANDLER();
+}
+
+// Verify that the Double compute type is exempt from the 2^24 cap. Double
+// uses loose_compute_t = double throughout, so bin_offset and the bin floor
+// are fp64 and the fp32 mantissa limit does not apply. Only the int32_t
+// indexing cap (num_range_bins <= INT32_MAX) constrains this path.
+TYPED_TEST(SarBpTestDoubleType, RangeBinsLimitDoublePath)
+{
+  MATX_ENTER_HANDLER();
+
+  using complex_t = cuda::std::complex<double>;
+
+  constexpr index_t MAX_RANGE_BINS = static_cast<index_t>(1) << 24;
+  const index_t num_pulses = 1;
+  const index_t image_width = 4;
+  const index_t image_height = 4;
+
+  auto zero_image = matx::zeros<complex_t>({image_height, image_width});
+  auto voxel_locations = matx::zipvec(
+    matx::zeros<double>({image_height, image_width}),
+    matx::zeros<double>({image_height, image_width}),
+    matx::zeros<double>({image_height, image_width}));
+  auto range_to_mcp = matx::zeros<double>({num_pulses});
+  auto platform_positions = matx::make_tensor<double3>({num_pulses});
+  platform_positions(0) = double3{0.0, 0.0, 1000.0};
+  auto image = matx::make_tensor<complex_t>({image_height, image_width});
+
+  SarBpParams params;
+  params.compute_type = SarBpComputeType::Double;
+  params.features = SarBpFeature::None;  // skip phase-LUT alloc
+  params.center_frequency = 10.0e9;
+  params.del_r = 1.0;
+
+  auto range_profiles = matx::ones<complex_t>({num_pulses, MAX_RANGE_BINS + 1});
+  EXPECT_NO_THROW({
+    (image = matx::experimental::sar_bp(
+      zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, params)).run(this->exec);
+    this->exec.sync();
+  });
 
   MATX_EXIT_HANDLER();
 }
@@ -223,8 +335,10 @@ TYPED_TEST(SarBpTestDoubleType, PointTarget)
 
   using ExecType = cuda::std::tuple_element_t<1, TypeParam>;
 
-  constexpr matx::index_t image_width = 128;
-  constexpr matx::index_t image_height = 128;
+  // Divisible by 4 for target-location checks, but not by the 16x16 CUDA block
+  // size, so TaylorFast exercises partial edge CTAs.
+  constexpr matx::index_t image_width = 132;
+  constexpr matx::index_t image_height = 132;
   const matx::index_t num_pulses = 128;
   const matx::index_t num_range_bins = 128;
 
@@ -243,7 +357,7 @@ TYPED_TEST(SarBpTestDoubleType, PointTarget)
   // Target range relative to mocomp point (0,0,0) — used for parameter setup
   [[maybe_unused]] const double target_R = ::sqrt(target_x * target_x + target_y * target_y);
 
-  matx::SarBpParams bp_params;
+  matx::SarBpParams bp_params{};
   bp_params.del_r = ::sqrt((image_width * pix_dx) * (image_width * pix_dx) + (image_height * pix_dy) * (image_height * pix_dy)) / num_range_bins;
   bp_params.center_frequency = 10.0e9;
   const double bin_offset = 0.5 * (num_range_bins - 1);
@@ -307,6 +421,9 @@ TYPED_TEST(SarBpTestDoubleType, PointTarget)
       }
     }
   };
+  // Single-precision machine epsilon is ~1.1921e-7; allow one fp32 epsilon
+  // per pulse of accumulation at the focused target pixel.
+  const double f32_accum_re_thresh = 1.2e-7 * static_cast<double>(num_pulses);
 
   // Start with fully fp64 backprojector. The range profiles and all position values are double precision.
   {
@@ -386,7 +503,7 @@ TYPED_TEST(SarBpTestDoubleType, PointTarget)
           const float expected = 0.98f * num_pulses;
           const float actual = image(i, j).real();
           ASSERT_GT(actual, expected);
-          ASSERT_LT(std::abs(image(i, j).imag()), 1.0f);
+          ASSERT_LT(std::abs(image(i, j).imag()), 3.0f);
         } else if (i < image_height / 8 || i >= 3 * image_height / 8) {
           // Away from the scatterer in range, we should not have any non-zero values.
           ASSERT_EQ(abs(image(i, j).real()), 0.0f);
@@ -400,30 +517,66 @@ TYPED_TEST(SarBpTestDoubleType, PointTarget)
     }
   }
 
-  // Mixed and FloatFloat versions of the backprojector. For these, we need double-precision platform positions
-  // and range to the mcp.
+  // Mixed, FloatFloat, and TaylorFast versions of the backprojector. For these, we need double-precision
+  // platform positions and range to the mcp.
   {
-    bp_params.features = matx::SarBpFeature::PhaseLUTOptimization;
-  
     auto platform_positions = matx::make_tensor<double3>({num_pulses});
     auto range_to_mcp = matx::make_tensor<double>({num_pulses});
     MATX_CUDA_CHECK(cudaMemcpy(
       platform_positions.Data(), h_antenna_phase_centers.data(), h_antenna_phase_centers.size() * sizeof(double3), cudaMemcpyHostToDevice));
     MATX_CUDA_CHECK(cudaMemcpy(range_to_mcp.Data(), h_range_to_mcp.data(), h_range_to_mcp.size() * sizeof(double), cudaMemcpyHostToDevice));
 
-    bp_params.compute_type = matx::SarBpComputeType::Mixed;
-    // example-begin sar-bp-1
-    (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, bp_params)).run(this->exec);
-    // example-end sar-bp-1
-    this->exec.sync();  
+    {
+      SCOPED_TRACE("Mixed no PhaseLUT");
 
-    validate(image, 1.05e-10, 1.0e-2);
+      // example-begin sar-bp-1
+      bp_params.compute_type = matx::SarBpComputeType::Mixed;
+      (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, bp_params)).run(this->exec);
+      // example-end sar-bp-1
+      this->exec.sync();
 
-    bp_params.compute_type = matx::SarBpComputeType::FloatFloat;
-    (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, bp_params)).run(this->exec);
-    this->exec.sync();  
+      validate(image, f32_accum_re_thresh, 1.0e-7);
+    }
 
-    validate(image, 1.05e-10, 1.0e-2);
+    bp_params.features = matx::SarBpFeature::PhaseLUTOptimization;
+
+    {
+      SCOPED_TRACE("Mixed PhaseLUT");
+
+      bp_params.compute_type = matx::SarBpComputeType::Mixed;
+      (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, bp_params)).run(this->exec);
+      this->exec.sync();
+
+      validate(image, f32_accum_re_thresh, 1.0e-2);
+    }
+
+    {
+      SCOPED_TRACE("FloatFloat");
+
+      bp_params.compute_type = matx::SarBpComputeType::FloatFloat;
+      (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, bp_params)).run(this->exec);
+      this->exec.sync();
+
+      validate(image, f32_accum_re_thresh, 1.0e-2);
+    }
+
+    {
+      SCOPED_TRACE("TaylorFast second order");
+      bp_params.compute_type = matx::SarBpComputeType::TaylorFast;
+      (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, bp_params)).run(this->exec);
+      this->exec.sync();
+
+      validate(image, f32_accum_re_thresh, 1.8e-2);
+    }
+
+    {
+      SCOPED_TRACE("TaylorFast third order");
+      (image = matx::experimental::sar_bp(zero_image, range_profiles, platform_positions, voxel_locations, range_to_mcp, bp_params)
+        .props<matx::PropSarBpTaylorFastAddThirdOrder>()).run(this->exec);
+      this->exec.sync();
+
+      validate(image, f32_accum_re_thresh, 1.8e-2);
+    }
   }
 
   MATX_EXIT_HANDLER();

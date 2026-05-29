@@ -1,25 +1,22 @@
-cmake_minimum_required(VERSION 3.25.2)
+cmake_minimum_required(VERSION 3.30.4)
 
+if(POLICY CMP0144)
+    # Preserve current behavior: CI may export upper-case package root variables
+    # that should not override dependencies fetched through CPM.
+    cmake_policy(SET CMP0144 OLD)
+endif()
 set(MATX_VERSION 1.0.0)
 
-# Used for config file generation
-if(NOT DEFINED PROJECT_NAME)
-  set(NOT_SUBPROJECT ON)
-else()
-  set(NOT_SUBPROJECT OFF)
-endif()
-
-# CMake 3.24 can auto-detect GPUs, but it's not standard on any distrobution. For now, rapids-cmake has a utility
-# function to do it, so we grab that as a dependency. The user can optionally override GPU_ARCH to specify
-# their own. We check if rapids-cmake exists for projects that already include it so we don't have conflicting
-# directories
+# Use the vendored rapids-cmake copy for GPU architecture discovery unless a parent
+# project already provided it. The user can optionally override GPU_ARCH to specify
+# their own.
 if(NOT DEFINED rapids-cmake-dir)
   include(FetchContent)
   # Tell FetchContent to just use the local copy of rapids-cmake:
   FetchContent_Declare(rapids-cmake SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake/rapids-cmake")
 
   # Tell FetchContent to download remote copy of rapids-cmake:
-  #FetchContent_Declare(rapids-cmake URL https://github.com/rapidsai/rapids-cmake/archive/refs/heads/branch-24.12.zip)
+  #FetchContent_Declare(rapids-cmake URL https://github.com/rapidsai/rapids-cmake/archive/refs/tags/v26.04.00.zip)
   FetchContent_MakeAvailable(rapids-cmake)
 else()
   # The include() commands below search the module path for the corresponding .cmake files
@@ -47,6 +44,17 @@ project(MATX
         DESCRIPTION "A modern and efficient header-only C++ library for numerical computing on GPU"
         VERSION ${MATX_VERSION}
         HOMEPAGE_URL "https://github.com/NVIDIA/MatX")
+
+if (NOT DEFINED MATX_GENERATE_CONFIG)
+    set(MATX_GENERATE_CONFIG ${PROJECT_IS_TOP_LEVEL})
+endif()
+set(MATX_GENERATE_CONFIG ${MATX_GENERATE_CONFIG} CACHE BOOL
+    "Generate MatX CMake package config files and install rules")
+set(MATX_INSTALL_INCLUDEDIR include)
+if (MATX_GENERATE_CONFIG)
+    include(GNUInstallDirs)
+    set(MATX_INSTALL_INCLUDEDIR ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
 
 if (NOT CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES "70;80")
@@ -118,8 +126,12 @@ if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
     endif()
 endif()
 
-# CPM is required for all package management
-include(public/cpm-cmake/cmake/CPM.cmake)
+# CPM is required for all package management. rapids_cpm_init loads it for the
+# main build, so only include the vendored copy when MatX is configured without
+# that initialization path.
+if(NOT COMMAND CPMAddPackage)
+    include(public/cpm-cmake/cmake/CPM.cmake)
+endif()
 # Helper for selecting build type
 include(cmake/BuildType.cmake)
 
@@ -131,10 +143,12 @@ rapids_find_package(
 # Create our transitive target to pass build properties to external users and our own build environment
 add_library(matx INTERFACE)
 add_library(matx::matx ALIAS matx)
-target_include_directories(matx INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-                                         "$<INSTALL_INTERFACE:include>")
-target_include_directories(matx INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/matx/kernels>"
-"$<INSTALL_INTERFACE:include/matx/kernels>")
+target_include_directories(matx INTERFACE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:${MATX_INSTALL_INCLUDEDIR}>")
+target_include_directories(matx INTERFACE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/matx/kernels>"
+    "$<INSTALL_INTERFACE:${MATX_INSTALL_INCLUDEDIR}/matx/kernels>")
 
                            
 target_compile_features(matx INTERFACE cxx_std_20 $<BUILD_INTERFACE:cuda_std_20>)
@@ -151,6 +165,9 @@ rapids_cpm_cccl(
 )
 
 target_link_libraries(matx INTERFACE CCCL::CCCL)
+if(CCCL_SOURCE_DIR)
+    target_compile_definitions(matx INTERFACE MATX_CCCL_SOURCE_DIR="${CCCL_SOURCE_DIR}")
+endif()
 
 if(WIN32)
     # Prevent wingdi.h from defining ERROR=0, which breaks MATX_LOG_ERROR
@@ -393,6 +410,7 @@ endif()
 
 # Enable JIT compilation support
 if (MATX_EN_JIT OR MATX_EN_MATHDX)
+    include(GNUInstallDirs)
     message(STATUS "Enabling JIT compilation support via NVRTC")
     target_compile_definitions(matx INTERFACE MATX_EN_JIT)
     
@@ -403,16 +421,42 @@ if (MATX_EN_JIT OR MATX_EN_MATHDX)
     string(REGEX REPLACE "-virtual$" "" NVRTC_CUDA_ARCH "${NVRTC_CUDA_ARCH}")
     target_compile_definitions(matx INTERFACE NVRTC_CUDA_ARCH="${NVRTC_CUDA_ARCH}")
     target_compile_definitions(matx INTERFACE NVRTC_CXX_STANDARD="${CMAKE_CXX_STANDARD}")
+    target_compile_definitions(matx INTERFACE "$<BUILD_INTERFACE:MATX_NVRTC_BUILD_DIR_DEFAULT=\"${CMAKE_BINARY_DIR}\">")
+    set(MATX_NVRTC_CCCL_BUILD_INCLUDE_DIRS
+        "${CCCL_SOURCE_DIR}/thrust"
+        "${CCCL_SOURCE_DIR}/libcudacxx/include"
+        "${CCCL_SOURCE_DIR}/cub")
+    list(JOIN MATX_NVRTC_CCCL_BUILD_INCLUDE_DIRS "|" MATX_NVRTC_CCCL_BUILD_INCLUDE_DIRS_DEFAULT)
+    set(MATX_NVRTC_CCCL_INSTALL_INCLUDE_DIRS_DEFAULT
+        "$<JOIN:$<TARGET_PROPERTY:CCCL::CCCL,INTERFACE_INCLUDE_DIRECTORIES>,|>")
+    target_compile_definitions(matx INTERFACE
+        "$<BUILD_INTERFACE:MATX_NVRTC_CCCL_INCLUDE_DIRS_DEFAULT=\"${MATX_NVRTC_CCCL_BUILD_INCLUDE_DIRS_DEFAULT}\">"
+        "$<INSTALL_INTERFACE:MATX_NVRTC_CCCL_INCLUDE_DIRS_DEFAULT=\"${MATX_NVRTC_CCCL_INSTALL_INCLUDE_DIRS_DEFAULT}\">")
     
     # Link NVRTC library
     target_link_libraries(matx INTERFACE CUDA::nvrtc)
+    if(TARGET CUDA::nvJitLink)
+        target_link_libraries(matx INTERFACE CUDA::nvJitLink)
+    endif()
 endif()
 
 if (MATX_EN_MATHDX)
-    set(MathDx_VERSION 25.06)
+    set(MathDx_VERSION 26.03)
     set(MathDx_NANO 0)
+    set(LIBMATHDX_VERSION 0.3.2)
     include(cmake/FindMathDx.cmake)
     target_compile_definitions(matx INTERFACE MATX_EN_MATHDX)
+    target_compile_definitions(matx INTERFACE
+        MATX_MATHDX_INCLUDE_DIR="${MATHDX_INCLUDE_DIR}"
+        MATX_MATHDX_CUTLASS_INCLUDE_DIR="${MATHDX_CUTLASS_INCLUDE_DIR}"
+        MATX_LIBMATHDX_INCLUDE_DIR="${LIBMATHDX_INCLUDE_DIR}"
+    )
+    if(EXISTS "${MATHDX_ROOT}/lib/libcusolverdx.fatbin")
+        target_compile_definitions(matx INTERFACE MATX_CUSOLVERDX_FATBIN="${MATHDX_ROOT}/lib/libcusolverdx.fatbin")
+    endif()
+    if(EXISTS "${MATHDX_ROOT}/lib/libcusolverdx.a")
+        target_compile_definitions(matx INTERFACE MATX_CUSOLVERDX_LIBRARY="${MATHDX_ROOT}/lib/libcusolverdx.a")
+    endif()
     
     # Link libmathdx if available
     if(TARGET libmathdx::libmathdx)
@@ -421,7 +465,7 @@ if (MATX_EN_MATHDX)
     endif()
     
     # Link mathdx components
-    target_link_libraries(matx INTERFACE mathdx::cufftdx)
+    target_link_libraries(matx INTERFACE mathdx::cufftdx mathdx::cublasdx_no_lto mathdx::cusolverdx)
 endif()
 
 if (MATX_EN_CUDSS)
@@ -476,21 +520,17 @@ target_link_libraries(matx INTERFACE
     CUDA::cusolver
     CUDA::cusparse)
 
-if (CMAKE_VERSION VERSION_LESS 3.25.0)
-    target_link_libraries(matx INTERFACE CUDA::nvToolsExt)
-else()
-    target_link_libraries(matx INTERFACE CUDA::nvtx3)
-endif()
+target_link_libraries(matx INTERFACE CUDA::nvtx3)
 
-# Build config files if the user isn't adding this as a subdirectory. At this point our transitive target
-# should have all build properties needed based on the options passed in
-if (NOT_SUBPROJECT)
-    include(GNUInstallDirs)
+# Build config files if requested. At this point our transitive target should
+# have all build properties needed based on the options passed in.
+if (MATX_GENERATE_CONFIG)
     include(CMakePackageConfigHelpers)
 
     install(TARGETS matx EXPORT matx-exports)
-    install(DIRECTORY include/ DESTINATION include)
-    install(FILES ${CMAKE_BINARY_DIR}/include/matx/version_config.h DESTINATION include)
+    install(DIRECTORY include/ DESTINATION ${MATX_INSTALL_INCLUDEDIR})
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/include/matx/version_config.h
+            DESTINATION ${MATX_INSTALL_INCLUDEDIR}/matx)
 
     set(doc_string
     [=[
