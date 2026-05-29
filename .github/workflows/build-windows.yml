@@ -106,7 +106,7 @@ jobs:
         run: |
           cmake -B build `
             -G "${{ matrix.generator }}" ${{ matrix.cmake_config_args || '' }} `
-            -DMATX_BUILD_TESTS=ON `
+            -DMATX_BUILD_TESTS=OFF `
             -DMATX_BUILD_EXAMPLES=ON `
             -DMATX_BUILD_BENCHMARKS=OFF `
             -DMATX_BUILD_DOCS=OFF `

@@ -202,6 +202,11 @@ if(WIN32)
         add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/wd4100>")
         add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/wd4100>")
 
+        # /wd4189: local variable initialized but not referenced — occurs in template-heavy
+        # code where variables are conditionally used depending on instantiation.
+        add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/wd4189>")
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/wd4189>")
+
         # /wd4864: VS18 new warning for dependent-name template calls on free function
         # templates. Correct code, not a real ambiguity; suppress to unblock /WX builds.
         add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/wd4864>")
@@ -220,6 +225,13 @@ if(WIN32)
         # functions such as get_type_str() instantiated over complex operator types.
         add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/wd4714>")
         add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/wd4714>")
+
+        # Suppress NVCC warning 1427 (offsetof on non-standard-layout class) from pybind11 system headers
+        add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-diag-suppress 1427>")
+
+        # Suppress NVCC warning 20011 (__host__ function called from __host__ __device__ function)
+        # in solver_projection.h: calls are guarded by #ifndef __CUDA_ARCH__ so they are safe.
+        add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-diag-suppress 20011>")
 
         # /wd4127: conditional expression is constant — common in template/constexpr code.
         # VS18 2025+ (MSVC 1950+) resolves most of these automatically; suppress only on
